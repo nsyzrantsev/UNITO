@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pandas as pd
 import torch
@@ -31,6 +32,28 @@ def export_model_onnx(model, onnx_path, input_shape=(1, 1, 101, 101), opset_vers
             "logits": {0: "batch_size"},
         },
     )
+
+
+def copy_model_artifacts(saved_models, export_dir):
+    """
+    Copy saved model artifacts to an external directory such as Google Drive.
+    """
+    if not export_dir:
+        return {}
+
+    os.makedirs(export_dir, exist_ok=True)
+    copied_paths = {}
+
+    for path_key in ["pt_path", "onnx_path"]:
+        source_path = saved_models.get(path_key)
+        if source_path is None:
+            continue
+
+        target_path = os.path.join(export_dir, os.path.basename(source_path))
+        shutil.copy2(source_path, target_path)
+        copied_paths[path_key] = target_path
+
+    return copied_paths
 
 
 def train(

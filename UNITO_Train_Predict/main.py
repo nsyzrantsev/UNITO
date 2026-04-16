@@ -8,7 +8,7 @@ import torch
 
 from Data_Preprocessing import process_table, train_test_val_split
 from Predict import UNITO_gating, evaluation
-from Train import train
+from Train import copy_model_artifacts, train
 from Validation_Recon_Plot_Single import plot_all
 from hyperparameter_tunning import tune
 
@@ -44,6 +44,7 @@ save_png = False
 force_rebuild = False
 export_onnx = True
 onnx_opset = 17
+model_export_dir = None
 
 hyperparameter_set = [
     [1e-3, 16],
@@ -118,6 +119,11 @@ for gate_pre, gate, x_axis, y_axis, path_raw in zip(
     print(f"Saved PyTorch model: {saved_models['pt_path']}")
     if saved_models["onnx_path"] is not None:
         print(f"Saved ONNX model: {saved_models['onnx_path']}")
+    copied_models = copy_model_artifacts(saved_models, model_export_dir)
+    if copied_models.get("pt_path") is not None:
+        print(f"Copied PyTorch model: {copied_models['pt_path']}")
+    if copied_models.get("onnx_path") is not None:
+        print(f"Copied ONNX model: {copied_models['onnx_path']}")
 
     print(f"Start prediction for {gate}")
     pred_path = "./Raw_Data_pred"
