@@ -1,194 +1,224 @@
 import os
+
+import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import random
-import matplotlib.pyplot as plt
-import seaborn as sn
 import scipy
-import cv2
+import seaborn as sn
+
+
+IMAGE_SIZE = 101
+
 
 def normalize(data, column):
     """
-    normalize the cytometric measurement
-    args:
-        data: dataframe containing all cytometric measurement
-        column: column name that needs to be normalized
+    Normalize one cytometric measurement column to the [0, 1] range.
     """
-    df_normalize = data[column]
-    min = df_normalize.min()
-    max = df_normalize.max()
-    df_normalize = (df_normalize-min)/(max-min)
-    return df_normalize
+    values = data[column].to_numpy(dtype=np.float32, copy=True)
+    if values.size == 0:
+        return values
 
-def matrix_plot(data_df_selected, x_axis, y_axis, pad_number = 0):
+    min_value = float(values.min())
+    max_value = float(values.max())
+
+    if max_value == min_value:
+        return np.zeros_like(values, dtype=np.float32)
+
+    return (values - min_value) / (max_value - min_value)
+
+
+def matrix_plot(data_df_selected, x_axis, y_axis, pad_number=0):
     """
-    draw image based on selected cytometric measurement
-    args:
-        data: dataframe containing all cytometric measurement
-        x_axis: first gating variable
-        y_axis: second gating variable
-        pad_number: allows uer to augment the cell-pixel to distinguish from background, set to 0 by default
+    Convert normalized coordinates into a fixed 101x101 density map.
     """
-    density = np.zeros((101,101))
+    density = np.zeros((IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32)
 
-    data_df_selected = data_df_selected.round(0)
-    data_df_selected_count = data_df_selected.groupby([x_axis, y_axis]).size().reset_index(name="count")
+    if data_df_selected.empty:
+        return density
 
-    coord = data_df_selected_count[[x_axis, y_axis]]
-    coord = coord.to_numpy().round(0).astype(int).T
-    coord[0] = 100 - coord[0] # invert position on plot
-    coord = list(zip(coord[0], coord[1]))
-    replace = data_df_selected_count[['count']].to_numpy()
-    for index, value in zip(coord, replace):
-        density[index] = value + pad_number
-    
-    index_x = np.linspace(0,100,101).round(2)
-    index_y = np.linspace(0,100,101).round(2)
-    df_plot = pd.DataFrame(density, index_x, index_y)
+    x_coord = np.clip(
+        np.rint(data_df_selected[x_axis].to_numpy(dtype=np.float32)),
+        0,
+        IMAGE_SIZE - 1,
+    ).astype(np.int16)
+    y_coord = np.clip(
+        np.rint(data_df_selected[y_axis].to_numpy(dtype=np.float32)),
+        0,
+        IMAGE_SIZE - 1,
+    ).astype(np.int16)
 
-    return df_plot
+    np.add.at(density, (IMAGE_SIZE - 1 - x_coord, y_coord), 1)
 
-def export_matrix(file_name, x_axis, y_axis, gate_pre, gate, path_raw, convex, seq = False, dest = '.'):
+    if pad_number:
+        density[density > 0] += pad_number
+
+    return density
+
+
+def save_density_png(density, output_path):
     """
-    Converting column value from cytometric data to images
-    args
-        file_name: the file needs to be processed
-        x_axis: first gating variable
-        y_axis: second gating variable
-        gate_pre: previous gate
-        gate: current gate
-        convex: control mask processing
-        seq: whether cells from previous gate should be filtered
-        raw_path: path storing raw data
+    Save a density map only when visualization artifacts are requested.
     """
-    data_df = pd.read_csv(os.path.join(path_raw, file_name))
-    if seq:
-        data_df = data_df[data_df[gate_pre]==1]
-
-    data_df_selected = data_df[[x_axis, y_axis, gate]]
-    data_df_selected[x_axis] = normalize(data_df_selected, x_axis)
-    data_df_selected[x_axis] = data_df_selected[x_axis]*100
-    data_df_selected[y_axis] = normalize(data_df_selected, y_axis)
-    data_df_selected[y_axis] = data_df_selected[y_axis]*100
-
     fig = plt.figure()
-    df_plot = matrix_plot(data_df_selected, x_axis, y_axis, 0)
-    sn.heatmap(df_plot, vmax = df_plot.max().max()/2, vmin = df_plot.min().min()/2)
-    plt.savefig(os.path.join(f'{dest}/Data/Data_{gate}/Raw_PNG/', file_name+'.png'))
-    np.save(os.path.join(f'{dest}/Data/Data_{gate}/Raw_Numpy/', file_name+'.npy'), df_plot)
-    plt.close()
-    
-    fig = plt.figure()
-    data_df_masked_2 = data_df_selected[data_df_selected[gate]==1]
-    df_plot = matrix_plot(data_df_masked_2, x_axis, y_axis, 0)
-    df_plot = df_plot.applymap(lambda x: 1 if x != 0 else 0)
-    # check if there is points in gate
-    df_plot = df_plot.to_numpy()
-    if np.sum(df_plot) > 3:
-        df_plot = fill_hull(df_plot, convex)
-    sn.heatmap(df_plot, vmax = df_plot.max().max()/2, vmin = df_plot.min().min()/2)
-    plt.savefig(os.path.join(f'{dest}/Data/Data_{gate}/Mask_PNG/', file_name+'.png'))
-    np.save(os.path.join(f'{dest}/Data/Data_{gate}/Mask_Numpy/', file_name+'.npy'), df_plot)
-    plt.close()
+    vmax = density.max() / 2 if density.max() > 0 else 1
+    vmin = density.min() / 2 if density.min() > 0 else 0
+    sn.heatmap(density, vmax=vmax, vmin=vmin)
+    plt.savefig(output_path)
+    plt.close(fig)
 
-def process_table(x_axis, y_axis, gate_pre, gate, directory, convex, seq = False, dest = '.'):   
-    """
-    Preparing images for deep learning model
-    args:
-        x_axis: first gating variable
-        y_axis: second gating variable
-        gate_pre: previous gate
-        gate: current gate
-        data_path: path storing raw data
-        convex: control mask processing
-        seq: whether cells from previous gate should be filtered
-    """
-    if not os.path.exists(f'{dest}/Data/Data_{gate}'):
-        os.mkdir(f"{dest}/Data/Data_{gate}")
-        os.mkdir(f"{dest}/Data/Data_{gate}/Mask_Numpy")
-        os.mkdir(f"{dest}/Data/Data_{gate}/Mask_PNG")
-        os.mkdir(f"{dest}/Data/Data_{gate}/Raw_Numpy")
-        os.mkdir(f"{dest}/Data/Data_{gate}/Raw_PNG")
 
-    # iterate over files in that directory
-    name_list = []
-    for filename in os.listdir(directory):
-        f = os.path.join(directory, filename)
-        # checking if it is a file
-        if os.path.isfile(f):
-            if 'csv' in filename: 
-                name_list.append(filename)
-    name_list_df = pd.DataFrame(name_list, columns =['subject']) 
-    name_list_df['subject_id'] = [x.split('.')[0] for x in name_list_df['subject']] # remove .csv
-    
-    # process the baseline subject
+def export_matrix(
+    file_name,
+    x_axis,
+    y_axis,
+    gate_pre,
+    gate,
+    path_raw,
+    convex,
+    seq=False,
+    dest=".",
+    save_png=False,
+    force_rebuild=False,
+):
+    """
+    Convert one cytometric table into raw and mask numpy matrices.
+    """
+    raw_numpy_path = os.path.join(f"{dest}/Data/Data_{gate}/Raw_Numpy/", file_name + ".npy")
+    mask_numpy_path = os.path.join(f"{dest}/Data/Data_{gate}/Mask_Numpy/", file_name + ".npy")
+
+    if (
+        not force_rebuild
+        and os.path.exists(raw_numpy_path)
+        and os.path.exists(mask_numpy_path)
+    ):
+        return
+
+    usecols = [x_axis, y_axis, gate]
+    if seq and gate_pre is not None:
+        usecols.append(gate_pre)
+
+    data_df = pd.read_csv(os.path.join(path_raw, file_name), usecols=usecols)
+    if seq and gate_pre is not None:
+        data_df = data_df[data_df[gate_pre] == 1]
+
+    data_df_selected = data_df[[x_axis, y_axis, gate]].copy()
+    data_df_selected.loc[:, x_axis] = normalize(data_df_selected, x_axis) * (IMAGE_SIZE - 1)
+    data_df_selected.loc[:, y_axis] = normalize(data_df_selected, y_axis) * (IMAGE_SIZE - 1)
+
+    raw_density = matrix_plot(data_df_selected, x_axis, y_axis)
+    max_value = float(raw_density.max())
+    if max_value > 0:
+        raw_density = raw_density / max_value
+    raw_density = raw_density.astype(np.float32, copy=False)
+
+    data_df_masked = data_df_selected[data_df_selected[gate] == 1]
+    mask_density = matrix_plot(data_df_masked, x_axis, y_axis)
+    mask_density = (mask_density > 0).astype(np.uint8, copy=False)
+    if np.sum(mask_density) > 3:
+        mask_density = fill_hull(mask_density, convex)
+
+    np.save(raw_numpy_path, raw_density)
+    np.save(mask_numpy_path, mask_density.astype(np.uint8, copy=False))
+
+    if save_png:
+        raw_png_path = os.path.join(f"{dest}/Data/Data_{gate}/Raw_PNG/", file_name + ".png")
+        mask_png_path = os.path.join(f"{dest}/Data/Data_{gate}/Mask_PNG/", file_name + ".png")
+        save_density_png(raw_density, raw_png_path)
+        save_density_png(mask_density, mask_png_path)
+
+
+def process_table(
+    x_axis,
+    y_axis,
+    gate_pre,
+    gate,
+    directory,
+    convex=True,
+    seq=False,
+    dest=".",
+    save_png=False,
+    force_rebuild=False,
+):
+    """
+    Prepare image matrices for model training or prediction.
+    """
+    base_dir = f"{dest}/Data/Data_{gate}"
+    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(f"{base_dir}/Mask_Numpy", exist_ok=True)
+    os.makedirs(f"{base_dir}/Raw_Numpy", exist_ok=True)
+
+    if save_png:
+        os.makedirs(f"{base_dir}/Mask_PNG", exist_ok=True)
+        os.makedirs(f"{base_dir}/Raw_PNG", exist_ok=True)
+
+    name_list = sorted(
+        filename
+        for filename in os.listdir(directory)
+        if filename.endswith(".csv") and os.path.isfile(os.path.join(directory, filename))
+    )
+
     for filename in name_list:
-        export_matrix(filename, x_axis, y_axis, gate_pre, gate, directory, convex, seq, dest)
+        export_matrix(
+            filename,
+            x_axis,
+            y_axis,
+            gate_pre,
+            gate,
+            directory,
+            convex,
+            seq=seq,
+            dest=dest,
+            save_png=save_png,
+            force_rebuild=force_rebuild,
+        )
+
     print("process table finished")
 
 
 def filter(path_list):
     """
-    keep only npy files in path list, just in case there are hidden sync files
-    args:
-        path_list: path containing the data
+    Keep only numpy files, guarding against hidden sync artifacts.
     """
-    path_ = []
-    for path in path_list:
-        if 'npy' in path:
-            path_.append(path)
-    return path_
+    return [path for path in path_list if path.endswith(".npy")]
 
-def train_test_val_split(gate, path, dest = '.', train_pred = 'train'):
+
+def train_test_val_split(gate, path, dest=".", train_pred="train"):
     """
-    Prepare the subject list for training and prediction
-    args:
-        gate: the gate name that needs to be gated
+    Prepare subject lists for training or prediction.
     """
-    if not os.path.exists(f"{dest}/Data/Data_{gate}/{train_pred}"):
-        os.mkdir(f"{dest}/Data/Data_{gate}/{train_pred}")
+    os.makedirs(f"{dest}/Data/Data_{gate}/{train_pred}", exist_ok=True)
 
-    subj_list = os.listdir(path)
-    subj_list = [x+'.npy' for x in subj_list if 'csv' in x]
-
-    imgs_ = [f"{dest}/Data/Data_{gate}/Raw_Numpy/"+x for x in subj_list]
-    masks_ = [f"{dest}/Data/Data_{gate}/Mask_Numpy/"+x for x in subj_list]
+    subj_list = sorted(x + ".npy" for x in os.listdir(path) if x.endswith(".csv"))
+    imgs_ = [f"{dest}/Data/Data_{gate}/Raw_Numpy/" + x for x in subj_list]
+    masks_ = [f"{dest}/Data/Data_{gate}/Mask_Numpy/" + x for x in subj_list]
 
     imgs = filter(imgs_)
     masks = filter(masks_)
-    path = pd.DataFrame(list(zip(imgs, masks)), columns = ['Image','Mask'])
+    path = pd.DataFrame(list(zip(imgs, masks)), columns=["Image", "Mask"])
 
     path.to_csv(f"{dest}/Data/Data_{gate}/{train_pred}/subj.csv", index=False)
 
 
 def fill_hull(image, convex=True):
     """
-    Compute the filled region of the given binary image.
-    If convex is True, compute the convex hull and return a mask of the filled hull.
-    If convex is False, only fill in the blank pixels within the existing boundaries.
-    
-    Adapted from:
-    https://gist.github.com/stuarteberg/8982d8e0419bea308326933860ecce30
+    Fill the binary gate region with either a convex hull or contour fill.
     """
     if convex:
-        # Convex hull filling
         points = np.argwhere(image).astype(np.int16)
         hull = scipy.spatial.ConvexHull(points)
-        convex_points = []
-        for vertex in hull.vertices:
-            convex_points.append(points[vertex].astype('int64'))
-        convex_points = np.array(convex_points)
+        convex_points = np.array([points[vertex] for vertex in hull.vertices], dtype=np.int64)
         convex_points[:, [1, 0]] = convex_points[:, [0, 1]]
 
-        a, b = image.shape
-        black_frame = np.zeros([a, b], dtype=np.uint8)
-        cv2.fillPoly(black_frame, pts=[convex_points], color=(255, 255, 255))
-        black_frame[black_frame == 255] = 1
+        black_frame = np.zeros(image.shape, dtype=np.uint8)
+        cv2.fillPoly(black_frame, pts=[convex_points], color=1)
     else:
-        # Filling within the existing object boundaries
         black_frame = image.copy().astype(np.uint8)
-        contours, _ = cv2.findContours(black_frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(black_frame, contours, -1, color=(255, 255, 255), thickness=cv2.FILLED)
-        black_frame[black_frame == 255] = 1
+        contours, _ = cv2.findContours(
+            black_frame,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        cv2.drawContours(black_frame, contours, -1, color=1, thickness=cv2.FILLED)
 
-    return black_frame
+    return black_frame.astype(np.uint8, copy=False)

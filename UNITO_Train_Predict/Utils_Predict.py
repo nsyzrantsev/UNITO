@@ -36,7 +36,7 @@ def mask_to_gate(y_list, pred_list, x_list, subj_list, x_axis, y_axis, gate, gat
   substring = ".csv.npy"
   subj_path = subj_path.split(substring)[0]
 
-  raw_table = pd.read_csv(path_raw + subj_path + '.csv')
+  raw_table = pd.read_csv(os.path.join(path_raw, subj_path + '.csv'))
   raw_table = raw_table.reset_index(drop=True)
   
   data_df_pred = get_pred_label(raw_table, x_axis, y_axis, mask_pred, gate, gate_pre, seq)
