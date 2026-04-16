@@ -1,5 +1,8 @@
+import inspect
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -10,28 +13,74 @@ from UNITO_Model import UNITO
 from Utils_Train import configure_runtime, fit_model, get_loaders, is_cuda_device
 
 
-def export_model_onnx(model, onnx_path, input_shape=(1, 1, 101, 101), opset_version=17):
+def build_onnx_metadata(gate_name, x_axis, y_axis, parent_gate=None):
     """
-    Export a trained UNITO model to ONNX with a dynamic batch axis.
+    Build ONNX metadata expected by downstream cytiq consumers.
+    """
+    metadata = {
+        "cytiq.gate_name": str(gate_name),
+        "cytiq.x_axis": str(x_axis),
+        "cytiq.y_axis": str(y_axis),
+    }
+
+    if parent_gate is not None:
+        parent_gate = str(parent_gate).strip()
+        if parent_gate:
+            metadata["cytiq.parent_gate"] = parent_gate
+
+    return metadata
+
+
+def export_model_onnx(
+    model,
+    onnx_path,
+    gate_name,
+    x_axis,
+    y_axis,
+    parent_gate=None,
+    input_shape=(1, 1, 101, 101),
+    opset_version=18,
+):
+    """
+    Export a trained UNITO model to a single-file ONNX with cytiq metadata.
     """
     export_model = UNITO(in_channels=1, out_channels=1)
     export_model.load_state_dict(model.state_dict())
     export_model.eval()
+    import onnx
 
+    onnx_path = Path(onnx_path)
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
     dummy_input = torch.randn(*input_shape, dtype=torch.float32)
-    torch.onnx.export(
-        export_model,
-        dummy_input,
-        onnx_path,
-        export_params=True,
-        opset_version=opset_version,
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={
+    export_signature = inspect.signature(torch.onnx.export)
+    export_kwargs = {
+        "export_params": True,
+        "opset_version": opset_version,
+        "input_names": ["input"],
+        "output_names": ["logits"],
+        "dynamic_axes": {
             "input": {0: "batch_size"},
             "logits": {0: "batch_size"},
         },
-    )
+    }
+    if "external_data" in export_signature.parameters:
+        export_kwargs["external_data"] = False
+    elif "use_external_data_format" in export_signature.parameters:
+        export_kwargs["use_external_data_format"] = False
+
+    metadata = build_onnx_metadata(gate_name, x_axis, y_axis, parent_gate=parent_gate)
+    with tempfile.TemporaryDirectory(dir=onnx_path.parent) as temp_dir:
+        exported_onnx_path = Path(temp_dir) / onnx_path.name
+        torch.onnx.export(
+            export_model,
+            dummy_input,
+            str(exported_onnx_path),
+            **export_kwargs,
+        )
+
+        exported_model = onnx.load_model(str(exported_onnx_path), load_external_data=True)
+        onnx.helper.set_model_props(exported_model, metadata)
+        onnx.save_model(exported_model, str(onnx_path), save_as_external_data=False)
 
 
 def copy_model_artifacts(saved_models, export_dir):
@@ -58,6 +107,8 @@ def copy_model_artifacts(saved_models, export_dir):
 
 def train(
     gate,
+    x_axis,
+    y_axis,
     learning_rate,
     device,
     batch_size,
@@ -66,8 +117,9 @@ def train(
     dest,
     use_amp=None,
     export_onnx=True,
-    onnx_opset=17,
+    onnx_opset=18,
     cache_in_memory=True,
+    parent_gate=None,
 ):
     """
     Train UNITO using the selected hyperparameters, then save .pt and .onnx models.
@@ -107,7 +159,15 @@ def train(
     onnx_path = None
     if export_onnx:
         onnx_path = os.path.join(f"{dest}/model", gate + "_model.onnx")
-        export_model_onnx(model, onnx_path, opset_version=onnx_opset)
+        export_model_onnx(
+            model,
+            onnx_path,
+            gate_name=gate,
+            x_axis=x_axis,
+            y_axis=y_axis,
+            parent_gate=parent_gate,
+            opset_version=onnx_opset,
+        )
 
     return {
         "pt_path": pt_path,
