@@ -107,8 +107,6 @@ def copy_model_artifacts(saved_models, export_dir):
 
 def train(
     gate,
-    x_axis,
-    y_axis,
     learning_rate,
     device,
     batch_size,
@@ -119,6 +117,8 @@ def train(
     export_onnx=True,
     onnx_opset=18,
     cache_in_memory=True,
+    x_axis=None,
+    y_axis=None,
     parent_gate=None,
 ):
     """
@@ -158,6 +158,10 @@ def train(
 
     onnx_path = None
     if export_onnx:
+        if x_axis is None or y_axis is None:
+            raise ValueError(
+                "x_axis and y_axis are required when export_onnx=True so the ONNX model includes cytiq metadata"
+            )
         onnx_path = os.path.join(f"{dest}/model", gate + "_model.onnx")
         export_model_onnx(
             model,

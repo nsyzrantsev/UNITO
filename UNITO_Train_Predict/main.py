@@ -107,8 +107,6 @@ for gate_pre, gate, x_axis, y_axis, path_raw in zip(
 
     saved_models = train(
         gate,
-        x_axis,
-        y_axis,
         best_lr,
         device,
         best_bs,
@@ -117,6 +115,8 @@ for gate_pre, gate, x_axis, y_axis, path_raw in zip(
         dest,
         export_onnx=export_onnx,
         onnx_opset=onnx_opset,
+        x_axis=x_axis,
+        y_axis=y_axis,
         parent_gate=gate_pre,
     )
     print(f"Saved PyTorch model: {saved_models['pt_path']}")
